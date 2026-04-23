@@ -3,6 +3,8 @@ import pygame
 import random
 import numpy as np
 import sys
+import threading
+import time
 from typing import Dict, Optional
 
 class Game2048:
@@ -34,6 +36,10 @@ class Game2048:
         self.EMPTY = (205, 193, 180)
         self.TEXT_COLOR = (119, 110, 101)
         self.TEXT_COLOR_LIGHT = (249, 246, 242)
+        self.GREEN = (76, 175, 80)
+        self.ORANGE = (255, 152, 0)
+        self.BLUE = (33, 150, 243)
+        self.GRAY = (158, 158, 158)
 
         # Tile colors
         self.TILE_COLORS = {
@@ -45,9 +51,14 @@ class Game2048:
 
         # AI settings
         self.ai_agent = ai_agent
-        self.ai_mode = False
-        self.training_mode = False
-        self.auto_play = False
+
+        # Mode settings
+        self.ai_mode = False  # AI control mode
+        self.training_mode = False  # Training mode
+        self.training_thread = None
+        self.training_stats = {}  # Training statistics
+
+        # Game state
         self.ai_move_delay = 300
         self.last_ai_move_time = 0
 
@@ -59,19 +70,16 @@ class Game2048:
         self.buttons = {
             'ai_toggle': {
                 'rect': pygame.Rect(20, button_y_start, button_width, button_height),
-                'text': 'AI Control' if not self.ai_mode else 'Manual',
-                'color': self.BUTTON_COLOR
+                'text': 'AI Control',
+                'color': self.BUTTON_COLOR,
+                'active_color': self.GREEN
             },
             'train': {
                 'rect': pygame.Rect(185, button_y_start, button_width, button_height),
-                'text': 'Start Train' if not self.training_mode else 'Stop Train',
-                'color': self.BUTTON_COLOR
+                'text': 'Start Train',
+                'color': self.BUTTON_COLOR,
+                'active_color': self.ORANGE
             },
-            # 'auto_play': {
-            #     'rect': pygame.Rect(240, button_y_start, button_width, button_height),
-            #     'text': 'Auto Play' if not self.auto_play else 'Stop Play',
-            #     'color': self.BUTTON_COLOR
-            # },
             'reset': {
                 'rect': pygame.Rect(350, button_y_start, button_width, button_height),
                 'text': 'Reset Game',
@@ -82,7 +90,7 @@ class Game2048:
         self.reset_game()
 
     def reset_game(self):
-        """Reset the game"""
+        """Reset the current game"""
         self.grid = [[0] * self.grid_size for _ in range(self.grid_size)]
         self.score = 0
         self.game_over = False
@@ -252,9 +260,17 @@ class Game2048:
         rect = button_info['rect']
         color = button_info['color']
 
+        # Use active color for active modes
+        if button_info.get('active', False):
+            color = button_info.get('active_color', self.BUTTON_COLOR)
+
         # Hover effect
         if rect.collidepoint(mouse_pos):
-            color = self.BUTTON_HOVER
+            if button_info.get('active', False):
+                # Darken active color on hover
+                color = tuple(max(0, c - 20) for c in color)
+            else:
+                color = self.BUTTON_HOVER
 
         # Draw button
         pygame.draw.rect(self.window, color, rect, 0, 5)
@@ -300,14 +316,25 @@ class Game2048:
         # Draw mode indicator
         mode_y = 160
         if self.ai_mode:
-            mode_color = (76, 175, 80)  # Green
-            # mode_text = "AI Control Mode"
-            mode_text = f"AI Control Mode:{str(self.ai_agent.agent_name())}"
+            mode_color = self.GREEN
+            mode_text = f"AI Control Mode"
+            if hasattr(self.ai_agent, 'agent_name'):
+                mode_text += f": {self.ai_agent.agent_name()}"
         elif self.training_mode:
-            mode_color = (255, 152, 0)  # Orange
+            mode_color = self.ORANGE
             mode_text = "Training Mode"
+
+            # Show training stats if available
+            if self.training_stats:
+                episodes = self.training_stats.get('episodes', 0)
+                avg_max = self.training_stats.get('avg_max_tile', 0)
+                last_max = self.training_stats.get('last_max_tile', 0)
+                avg_score = self.training_stats.get('avg_score', 0)
+
+                # 显示最大方块训练进度
+                mode_text += f" (Ep:{episodes}, Max:{last_max}, AvgMax:{avg_max:.0f})"
         else:
-            mode_color = (158, 158, 158)  # Gray
+            mode_color = self.GRAY
             mode_text = "Manual Control"
 
         mode_surface = self.small_font.render(mode_text, True, mode_color)
@@ -398,8 +425,6 @@ class Game2048:
                     self.toggle_ai_mode()
                 elif button_id == 'train':
                     self.toggle_training_mode()
-                elif button_id == 'auto_play':
-                    self.toggle_auto_play()
                 elif button_id == 'reset':
                     self.reset_game()
                 return True
@@ -407,31 +432,126 @@ class Game2048:
 
     def toggle_ai_mode(self):
         """Toggle AI control mode"""
-        self.ai_mode = not self.ai_mode
-        self.buttons['ai_toggle']['text'] = 'Manual' if self.ai_mode else 'AI Control'
-
-        if self.ai_mode and self.ai_agent is None:
+        if self.ai_agent is None:
             print("Warning: No AI agent set, AI mode unavailable")
-            self.ai_mode = False
+            return
+
+        self.ai_mode = not self.ai_mode
+        self.buttons['ai_toggle']['active'] = self.ai_mode
+
+        if self.ai_mode:
+            self.buttons['ai_toggle']['text'] = 'AI On'
+        else:
             self.buttons['ai_toggle']['text'] = 'AI Control'
 
     def toggle_training_mode(self):
         """Toggle training mode"""
-        self.training_mode = not self.training_mode
-        self.buttons['train']['text'] = 'Stop Train' if self.training_mode else 'Start Train'
-
-        if self.training_mode and self.ai_agent is None:
+        if self.ai_agent is None:
             print("Warning: No AI agent set, training mode unavailable")
-            self.training_mode = False
-            self.buttons['train']['text'] = 'Start Train'
+            return
 
-    def toggle_auto_play(self):
-        """Toggle auto play mode"""
-        self.auto_play = not self.auto_play
-        self.buttons['auto_play']['text'] = 'Stop Play' if self.auto_play else 'Auto Play'
+        self.training_mode = not self.training_mode
+        self.buttons['train']['active'] = self.training_mode
+
+        if self.training_mode:
+            self.buttons['train']['text'] = 'Training...'
+            # Start training in a separate thread
+            self.start_training()
+        else:
+            self.buttons['train']['text'] = 'Start Train'
+            # Stop training
+            self.stop_training()
+
+    def start_training(self):
+        """Start training in a separate thread"""
+        if self.training_thread is not None and self.training_thread.is_alive():
+            return
+
+        def training_worker():
+            episodes = 0
+            max_tiles = []  # 记录最大方块历史
+
+            while self.training_mode:
+                # Create a new game for training
+                from training import TrainingGame
+                game = TrainingGame()
+                state = game.reset()
+                episode_max_tile = 0
+                episode_score = 0
+
+                while True:
+                    # 记录旧的最大方块
+                    old_max_tile = game.get_max_tile()
+
+                    # Select action
+                    action = self.ai_agent.select_action(state, eval_mode=False)
+
+                    # Execute action
+                    next_state, reward, done = game.step(action)
+
+                    # 记录新的最大方块
+                    new_max_tile = game.get_max_tile()
+                    episode_max_tile = max(episode_max_tile, new_max_tile)
+                    episode_score = game.score
+
+                    # 确保状态被正确展平
+                    state_flat = state.flatten()  # 从(4,4)变成(16,)
+                    next_state_flat = next_state.flatten()
+
+                    # Store experience (使用展平的状态)
+                    if hasattr(self.ai_agent, 'memory'):
+                        self.ai_agent.memory.push(state_flat, action, reward, next_state_flat, done)
+
+                    # Update agent
+                    if hasattr(self.ai_agent, 'update'):
+                        try:
+                            self.ai_agent.update()
+                        except Exception as e:
+                            print(f"Update error: {e}")
+                            # 如果更新出错，继续下一次循环
+                            pass
+
+                    # Update state
+                    state = next_state
+
+                    if done:
+                        break
+
+                # Update training stats
+                episodes += 1
+                max_tiles.append(episode_max_tile)
+
+                # Keep only last 100 max tiles for average
+                if len(max_tiles) > 100:
+                    max_tiles.pop(0)
+
+                avg_max_tile = np.mean(max_tiles) if max_tiles else 0
+                avg_score = episode_score  # 或者用历史平均分数
+
+                # Update UI stats (显示最大方块统计)
+                self.training_stats = {
+                    'episodes': episodes,
+                    'avg_score': avg_score,
+                    'avg_max_tile': avg_max_tile,
+                    'last_max_tile': episode_max_tile,
+                    'last_score': episode_score
+                }
+
+                # Sleep a bit to prevent overwhelming the UI
+                time.sleep(0.01)
+
+        self.training_thread = threading.Thread(target=training_worker, daemon=True)
+        self.training_thread.start()
+
+    def stop_training(self):
+        """Stop training"""
+        self.training_mode = False
+        if self.training_thread is not None:
+            self.training_thread.join(timeout=1.0)
+        self.training_thread = None
 
     def ai_move(self):
-        """Make AI move"""
+        """Make AI move (only in AI control mode)"""
         if not self.ai_mode or self.game_over or self.ai_agent is None:
             return False
 
@@ -442,41 +562,14 @@ class Game2048:
         # Get current state
         state = self.get_observation()
 
-        # AI selects action
-        action = self.ai_agent.select_action(state, eval_mode=not self.training_mode)
+        # AI selects action (in eval mode, no exploration)
+        action = self.ai_agent.select_action(state, eval_mode=True)
 
         # Execute action
         moved = self.step(action)
 
-        if moved and self.training_mode:
-            # In training mode, get next state
-            next_state = self.get_observation()
-            done = self.game_over
-
-            # Store experience in replay buffer
-            if hasattr(self.ai_agent, 'memory'):
-                # Calculate reward
-                reward = self.calculate_reward()
-                self.ai_agent.memory.push(state, action, reward, next_state, done)
-
-            # Update AI model
-            if hasattr(self.ai_agent, 'update'):
-                self.ai_agent.update()
-
         self.last_ai_move_time = current_time
         return moved
-
-    def calculate_reward(self):
-        """Calculate reward for training"""
-        reward = 0.0
-        reward += self.score * 0.01
-        reward += self.count_empty_cells() * 0.1
-        reward += np.log2(self.get_max_tile()) * 0.5
-        if self.game_over:
-            reward -= 10.0
-        if self.win:
-            reward += 100.0
-        return reward
 
     def set_ai_agent(self, agent):
         """Set AI agent"""
@@ -510,18 +603,16 @@ class Game2048:
                     if event.button == 1:  # Left click
                         self.handle_button_click(event.pos)
 
-            # AI control
+            # AI control (only in AI mode, not in training mode)
             if self.ai_mode and not self.game_over:
-                self.ai_move()
-
-            # Auto play mode
-            if self.auto_play and not self.game_over:
                 self.ai_move()
 
             # Draw
             self.draw()
             self.clock.tick(60)
 
+        # Clean up
+        self.stop_training()
         pygame.quit()
         sys.exit()
 
@@ -539,8 +630,22 @@ class SimpleAIAgent:
 
 if __name__ == "__main__":
     # Create a simple AI agent for testing
-    ai_agent = SimpleAIAgent()
+    import torch
 
+    # 选择设备
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Using device: {device}")
+
+    # 创建一个AI智能体（可以选择不同的智能体）
+    from training import DQNAgent
+
+    # 选项1: 创建DQN智能体（训练用）
+    ai_agent = DQNAgent(state_size=16, n_actions=4, device=device)
     # Create and run the game
     game = Game2048(ai_agent=ai_agent)
-    game.run()
+    try:
+        game.run()
+    finally:
+        # 游戏退出时自动保存
+        if hasattr(ai_agent, 'training_steps') and ai_agent.training_steps > 0:
+            ai_agent.save("models/2048_trained.pth")

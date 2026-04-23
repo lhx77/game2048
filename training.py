@@ -1,17 +1,16 @@
-# train_2048.py
+# training.py
 import pygame
+import time
+import argparse
+import matplotlib.pyplot as plt
+from game2048 import Game2048
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import random
-import os
-import time
-import argparse
 from collections import deque
-from datetime import datetime
-import matplotlib.pyplot as plt
-from game2048 import Game2048
+import os
 
 class ReplayBuffer:
     """Experience replay buffer"""
@@ -44,6 +43,7 @@ class DQNNetwork(nn.Module):
     def __init__(self, input_size=16, n_actions=4, hidden_size=128):
         super(DQNNetwork, self).__init__()
 
+        # 输入应该是展平的4x4网格 = 16
         self.network = nn.Sequential(
             nn.Linear(input_size, hidden_size),
             nn.ReLU(),
@@ -55,6 +55,10 @@ class DQNNetwork(nn.Module):
         )
 
     def forward(self, x):
+        # 确保输入被展平
+        if x.dim() > 2:
+            batch_size = x.size(0)
+            x = x.view(batch_size, -1)
         return self.network(x)
 
 class DQNAgent:
@@ -97,13 +101,18 @@ class DQNAgent:
         self.episode_lengths = []
         self.losses = []
 
+        # Name for display
+        self.name = "DQNAgent"
+
     def select_action(self, state, eval_mode=False):
         """Select action using epsilon-greedy policy"""
         if not eval_mode and random.random() < self.epsilon:
             return random.randrange(self.n_actions)
 
         with torch.no_grad():
-            state_tensor = torch.FloatTensor(state).flatten().unsqueeze(0).to(self.device)
+            # 展平状态：从(4,4)到(16,)
+            state_flattened = state.flatten()
+            state_tensor = torch.FloatTensor(state_flattened).unsqueeze(0).to(self.device)
             q_values = self.policy_net(state_tensor)
             return q_values.argmax().item()
 
@@ -111,20 +120,25 @@ class DQNAgent:
         """Compute temporal difference loss"""
         states, actions, rewards, next_states, dones = batch
 
+        # 展平状态：从(batch, 4, 4)到(batch, 16)
+        batch_size = states.shape[0]
+        states_flat = states.reshape(batch_size, -1)
+        next_states_flat = next_states.reshape(batch_size, -1)
+
         # Convert to tensors
-        states = torch.FloatTensor(states).to(self.device)
-        actions = torch.LongTensor(actions).to(self.device)
-        rewards = torch.FloatTensor(rewards).to(self.device)
-        next_states = torch.FloatTensor(next_states).to(self.device)
-        dones = torch.FloatTensor(dones).to(self.device)
+        states_tensor = torch.FloatTensor(states_flat).to(self.device)
+        actions_tensor = torch.LongTensor(actions).to(self.device)
+        rewards_tensor = torch.FloatTensor(rewards).to(self.device)
+        next_states_tensor = torch.FloatTensor(next_states_flat).to(self.device)
+        dones_tensor = torch.FloatTensor(dones).to(self.device)
 
         # Get current Q values
-        current_q = self.policy_net(states).gather(1, actions.unsqueeze(1))
+        current_q = self.policy_net(states_tensor).gather(1, actions_tensor.unsqueeze(1))
 
         # Get next Q values from target network
         with torch.no_grad():
-            next_q = self.target_net(next_states).max(1)[0]
-            target_q = rewards + (1 - dones) * self.gamma * next_q
+            next_q = self.target_net(next_states_tensor).max(1)[0]
+            target_q = rewards_tensor + (1 - dones_tensor) * self.gamma * next_q
 
         # Compute loss
         loss = nn.MSELoss()(current_q.squeeze(), target_q)
@@ -173,7 +187,8 @@ class DQNAgent:
                 'max_tiles': self.episode_max_tiles,
                 'lengths': self.episode_lengths,
                 'losses': self.losses
-            }
+            },
+            'name': self.name
         }, path)
         print(f"Model saved to {path}")
 
@@ -195,6 +210,9 @@ class DQNAgent:
                 self.episode_lengths = stats.get('lengths', [])
                 self.losses = stats.get('losses', [])
 
+            if 'name' in checkpoint:
+                self.name = checkpoint['name']
+
             print(f"Model loaded from {path}")
             return True
         else:
@@ -209,6 +227,232 @@ class DQNAgent:
             'training_steps': self.training_steps,
             'episodes': len(self.episode_rewards)
         }
+
+    def agent_name(self):
+        """Get agent name for display"""
+        return self.name
+
+    def set_name(self, name):
+        """Set agent name"""
+        self.name = name
+
+# Simple AI agents for testing
+class SimpleAIAgent:
+    """Simple rule-based AI agent"""
+    def __init__(self):
+        self.memory = []
+        self.name = "SimpleAIAgent"
+
+    def select_action(self, state, eval_mode=False):
+        """Simple strategy: prefer right and down moves"""
+        # This is a very basic strategy
+        return random.choice([1, 3])  # Prefer down and right
+
+    def update(self):
+        """No update for simple agent"""
+        return 0.0
+
+    def agent_name(self):
+        return self.name
+
+class RandomAIAgent:
+    """Completely random AI agent (baseline)"""
+    def __init__(self):
+        self.memory = []
+        self.name = "RandomAIAgent"
+
+    def select_action(self, state, eval_mode=False):
+        """Random action"""
+        return random.randrange(4)  # 0-3: up, down, left, right
+
+    def update(self):
+        """No update for random agent"""
+        return 0.0
+
+    def agent_name(self):
+        return self.name
+
+class TrainingGame:
+    def __init__(self):
+        self.grid_size = 4
+        self.grid = [[0] * 4 for _ in range(4)]
+        self.score = 0
+        self.game_over = False
+        self.win = False
+        self.steps = 0
+        self.add_random_tile()
+        self.add_random_tile()
+
+    def add_random_tile(self):
+        empty_cells = []
+        for i in range(self.grid_size):
+            for j in range(self.grid_size):
+                if self.grid[i][j] == 0:
+                    empty_cells.append((i, j))
+
+        if empty_cells:
+            i, j = random.choice(empty_cells)
+            self.grid[i][j] = 2 if random.random() < 0.9 else 4
+            return True
+        return False
+
+    def get_observation(self):
+        obs = np.array(self.grid, dtype=np.float32)
+        obs = np.where(obs == 0, 1, obs)
+        obs = np.log2(obs)
+        obs = obs / 11.0
+        return obs
+
+    def compress(self, line):
+        return [x for x in line if x != 0]
+
+    def merge(self, line):
+        score = 0
+        result = []
+        i = 0
+        while i < len(line):
+            if i < len(line) - 1 and line[i] == line[i + 1]:
+                merged = line[i] * 2
+                result.append(merged)
+                score += merged
+                i += 2
+            else:
+                result.append(line[i])
+                i += 1
+        return result, score
+
+    def move(self, direction):
+        moved = False
+        total_score = 0
+        new_grid = [[0] * self.grid_size for _ in range(self.grid_size)]
+
+        if direction == 0:  # Up
+            for col in range(self.grid_size):
+                column = [self.grid[row][col] for row in range(self.grid_size)]
+                compressed = self.compress(column)
+                merged, score = self.merge(compressed)
+                total_score += score
+                for row in range(len(merged)):
+                    new_grid[row][col] = merged[row]
+                    if column[row] != merged[row]:
+                        moved = True
+
+        elif direction == 1:  # Down
+            for col in range(self.grid_size):
+                column = [self.grid[row][col] for row in range(self.grid_size)]
+                compressed = self.compress(column[::-1])
+                merged, score = self.merge(compressed)
+                total_score += score
+                merged = merged[::-1] + [0] * (self.grid_size - len(merged))
+                for row in range(self.grid_size):
+                    new_grid[self.grid_size - 1 - row][col] = merged[row]
+                    if column[row] != merged[self.grid_size - 1 - row]:
+                        moved = True
+
+        elif direction == 2:  # Left
+            for row in range(self.grid_size):
+                compressed = self.compress(self.grid[row])
+                merged, score = self.merge(compressed)
+                total_score += score
+                new_grid[row] = merged + [0] * (self.grid_size - len(merged))
+                if self.grid[row] != new_grid[row]:
+                    moved = True
+
+        elif direction == 3:  # Right
+            for row in range(self.grid_size):
+                compressed = self.compress(self.grid[row][::-1])
+                merged, score = self.merge(compressed)
+                total_score += score
+                merged = merged[::-1] + [0] * (self.grid_size - len(merged))
+                new_grid[row] = merged
+                if self.grid[row] != new_grid[row]:
+                    moved = True
+
+        self.grid = new_grid
+        return moved, total_score
+
+    def can_move(self):
+        for i in range(self.grid_size):
+            for j in range(self.grid_size):
+                if self.grid[i][j] == 0:
+                    return True
+                val = self.grid[i][j]
+                if j < self.grid_size - 1 and self.grid[i][j+1] == val:
+                    return True
+                if i < self.grid_size - 1 and self.grid[i+1][j] == val:
+                    return True
+        return False
+
+    def get_max_tile(self):
+        return max(max(row) for row in self.grid)
+
+    def count_empty_cells(self):
+        return sum(1 for row in self.grid for val in row if val == 0)
+
+    def calculate_reward(self, score_gain, moved, max_tile, game_over, win):
+        reward = 0.0
+
+        # 1. 主要目标：当前最大方块的对数值（主要奖励）
+        if max_tile >= 2:  # 至少有方块2
+            # 使用log2，更大的方块获得指数级更高奖励
+            # 例如：2->1, 4->2, 8->3, 16->4, 32->5, 64->6, 128->7, 256->8, 512->9, 1024->10, 2048->11
+            reward += np.log2(max_tile) * 4.0
+
+        # 2. 方块合并奖励（间接有利于增加最大方块）
+        # 每次合并增加奖励，但比最大方块权重低
+        reward += score_gain * 0.001  # 非常低的分数权重，只作为合并信号
+
+        # 3. 无效移动惩罚（轻微）
+        if not moved:
+            reward -= 0.2
+
+        # 4. 游戏结束惩罚
+        if game_over:
+            reward -= 30.0
+
+        # 5. 达到2048的胜利奖励
+        if win:
+            reward += 20.0
+
+        return reward
+
+    def step(self, action):
+        if self.game_over:
+            return None, 0.0, True
+
+        self.steps += 1
+        old_max_tile = self.get_max_tile()
+
+        moved, score_gain = self.move(action)
+        self.score += score_gain
+
+        if moved:
+            self.add_random_tile()
+
+        max_tile = self.get_max_tile()
+        if max_tile >= 2048 and not self.win:
+            self.win = True
+
+        if not self.can_move():
+            self.game_over = True
+
+        reward = self.calculate_reward(
+            score_gain, moved, max_tile,
+            self.game_over, self.win
+        )
+
+        return self.get_observation(), reward, self.game_over
+
+    def reset(self):
+        self.grid = [[0] * self.grid_size for _ in range(self.grid_size)]
+        self.score = 0
+        self.game_over = False
+        self.win = False
+        self.steps = 0
+        self.add_random_tile()
+        self.add_random_tile()
+        return self.get_observation()
+
 
 def train_agent(episodes=1000, render=False, save_dir='models', device='cpu'):
     """Train the DQN agent"""
@@ -231,173 +475,6 @@ def train_agent(episodes=1000, render=False, save_dir='models', device='cpu'):
             game = Game2048(agent)
         else:
             # Create a lightweight game instance for training
-            class TrainingGame:
-                def __init__(self):
-                    self.grid_size = 4
-                    self.grid = [[0] * 4 for _ in range(4)]
-                    self.score = 0
-                    self.game_over = False
-                    self.win = False
-                    self.steps = 0
-                    self.add_random_tile()
-                    self.add_random_tile()
-
-                def add_random_tile(self):
-                    empty_cells = []
-                    for i in range(self.grid_size):
-                        for j in range(self.grid_size):
-                            if self.grid[i][j] == 0:
-                                empty_cells.append((i, j))
-
-                    if empty_cells:
-                        i, j = random.choice(empty_cells)
-                        self.grid[i][j] = 2 if random.random() < 0.9 else 4
-                        return True
-                    return False
-
-                def get_observation(self):
-                    obs = np.array(self.grid, dtype=np.float32)
-                    obs = np.where(obs == 0, 1, obs)
-                    obs = np.log2(obs)
-                    obs = obs / 11.0
-                    return obs
-
-                def compress(self, line):
-                    return [x for x in line if x != 0]
-
-                def merge(self, line):
-                    score = 0
-                    result = []
-                    i = 0
-                    while i < len(line):
-                        if i < len(line) - 1 and line[i] == line[i + 1]:
-                            merged = line[i] * 2
-                            result.append(merged)
-                            score += merged
-                            i += 2
-                        else:
-                            result.append(line[i])
-                            i += 1
-                    return result, score
-
-                def move(self, direction):
-                    moved = False
-                    total_score = 0
-                    new_grid = [[0] * self.grid_size for _ in range(self.grid_size)]
-
-                    if direction == 0:  # Up
-                        for col in range(self.grid_size):
-                            column = [self.grid[row][col] for row in range(self.grid_size)]
-                            compressed = self.compress(column)
-                            merged, score = self.merge(compressed)
-                            total_score += score
-                            for row in range(len(merged)):
-                                new_grid[row][col] = merged[row]
-                                if column[row] != merged[row]:
-                                    moved = True
-
-                    elif direction == 1:  # Down
-                        for col in range(self.grid_size):
-                            column = [self.grid[row][col] for row in range(self.grid_size)]
-                            compressed = self.compress(column[::-1])
-                            merged, score = self.merge(compressed)
-                            total_score += score
-                            merged = merged[::-1] + [0] * (self.grid_size - len(merged))
-                            for row in range(self.grid_size):
-                                new_grid[self.grid_size - 1 - row][col] = merged[row]
-                                if column[row] != merged[self.grid_size - 1 - row]:
-                                    moved = True
-
-                    elif direction == 2:  # Left
-                        for row in range(self.grid_size):
-                            compressed = self.compress(self.grid[row])
-                            merged, score = self.merge(compressed)
-                            total_score += score
-                            new_grid[row] = merged + [0] * (self.grid_size - len(merged))
-                            if self.grid[row] != new_grid[row]:
-                                moved = True
-
-                    elif direction == 3:  # Right
-                        for row in range(self.grid_size):
-                            compressed = self.compress(self.grid[row][::-1])
-                            merged, score = self.merge(compressed)
-                            total_score += score
-                            merged = merged[::-1] + [0] * (self.grid_size - len(merged))
-                            new_grid[row] = merged
-                            if self.grid[row] != new_grid[row]:
-                                moved = True
-
-                    self.grid = new_grid
-                    return moved, total_score
-
-                def can_move(self):
-                    for i in range(self.grid_size):
-                        for j in range(self.grid_size):
-                            if self.grid[i][j] == 0:
-                                return True
-                            val = self.grid[i][j]
-                            if j < self.grid_size - 1 and self.grid[i][j+1] == val:
-                                return True
-                            if i < self.grid_size - 1 and self.grid[i+1][j] == val:
-                                return True
-                    return False
-
-                def get_max_tile(self):
-                    return max(max(row) for row in self.grid)
-
-                def count_empty_cells(self):
-                    return sum(1 for row in self.grid for val in row if val == 0)
-
-                def calculate_reward(self, score_gain, moved, max_tile, game_over, win):
-                    reward = 0.0
-                    reward += score_gain * 0.1
-                    if not moved:
-                        reward -= 1.0
-                    reward += self.count_empty_cells() * 0.1
-                    reward += np.log2(max_tile) * 0.5 if max_tile > 0 else 0
-                    if game_over:
-                        reward -= 10.0
-                    if win:
-                        reward += 100.0
-                    return reward
-
-                def step(self, action):
-                    if self.game_over:
-                        return None, 0.0, True
-
-                    self.steps += 1
-                    old_max_tile = self.get_max_tile()
-
-                    moved, score_gain = self.move(action)
-                    self.score += score_gain
-
-                    if moved:
-                        self.add_random_tile()
-
-                    max_tile = self.get_max_tile()
-                    if max_tile >= 2048 and not self.win:
-                        self.win = True
-
-                    if not self.can_move():
-                        self.game_over = True
-
-                    reward = self.calculate_reward(
-                        score_gain, moved, max_tile,
-                        self.game_over, self.win
-                    )
-
-                    return self.get_observation(), reward, self.game_over
-
-                def reset(self):
-                    self.grid = [[0] * self.grid_size for _ in range(self.grid_size)]
-                    self.score = 0
-                    self.game_over = False
-                    self.win = False
-                    self.steps = 0
-                    self.add_random_tile()
-                    self.add_random_tile()
-                    return self.get_observation()
-
             game = TrainingGame()
 
         # Reset game
