@@ -5,6 +5,7 @@ import numpy as np
 import sys
 import threading
 import time
+import math
 from typing import Dict, Optional
 
 class Game2048:
@@ -116,12 +117,18 @@ class Game2048:
         return False
 
     def get_observation(self):
-        """Get current state for AI"""
-        obs = np.array(self.grid, dtype=np.float32)
-        obs = np.where(obs == 0, 1, obs)
-        obs = np.log2(obs)
-        obs = obs / 11.0
-        return obs
+        """Get one-hot state for AI"""
+        one_hot = np.zeros((4, 4, 16), dtype=np.float32)
+        for i in range(4):
+            for j in range(4):
+                val = self.grid[i][j]
+                if val == 0:
+                    one_hot[i, j, 0] = 1
+                else:
+                    power = int(math.log2(val))
+                    idx = min(power, 15)
+                    one_hot[i, j, idx] = 1
+        return one_hot.flatten()
 
     def compress(self, line):
         """Remove zeros from line"""
@@ -144,6 +151,42 @@ class Game2048:
                 i += 1
 
         return result, score
+
+    def check_move(self, direction):
+        """Check if a move is possible in a specific direction"""
+        if direction == 0:  # Up
+            for col in range(self.grid_size):
+                for row in range(self.grid_size - 1):
+                    if self.grid[row][col] == 0 and self.grid[row+1][col] != 0:
+                        return True
+                    if self.grid[row][col] != 0 and self.grid[row][col] == self.grid[row+1][col]:
+                        return True
+        elif direction == 1:  # Down
+            for col in range(self.grid_size):
+                for row in range(self.grid_size - 1, 0, -1):
+                    if self.grid[row][col] == 0 and self.grid[row-1][col] != 0:
+                        return True
+                    if self.grid[row][col] != 0 and self.grid[row][col] == self.grid[row-1][col]:
+                        return True
+        elif direction == 2:  # Left
+            for row in range(self.grid_size):
+                for col in range(self.grid_size - 1):
+                    if self.grid[row][col] == 0 and self.grid[row][col+1] != 0:
+                        return True
+                    if self.grid[row][col] != 0 and self.grid[row][col] == self.grid[row][col+1]:
+                        return True
+        elif direction == 3:  # Right
+            for row in range(self.grid_size):
+                for col in range(self.grid_size - 1, 0, -1):
+                    if self.grid[row][col] == 0 and self.grid[row][col-1] != 0:
+                        return True
+                    if self.grid[row][col] != 0 and self.grid[row][col] == self.grid[row][col-1]:
+                        return True
+        return False
+
+    def get_legal_actions(self):
+        """Get list of legal actions"""
+        return [a for a in range(4) if self.check_move(a)]
 
     def move(self, direction):
         """Move grid, return (moved, score)"""
@@ -447,8 +490,11 @@ class Game2048:
     def toggle_training_mode(self):
         """Toggle training mode"""
         if self.ai_agent is None:
-            print("Warning: No AI agent set, training mode unavailable")
-            return
+            print("Initializing AI agent for training...")
+            from training import DQNAgent
+            import torch
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            self.ai_agent = DQNAgent(device=device)
 
         self.training_mode = not self.training_mode
         self.buttons['train']['active'] = self.training_mode
@@ -470,52 +516,75 @@ class Game2048:
         def training_worker():
             episodes = 0
             max_tiles = []  # 记录最大方块历史
+            avg_score = 0   # 初始化平均分数
+            avg_max_tile = 0 # 初始化平均最大方块
+            from training import TrainingGame, get_symmetries
 
             while self.training_mode:
                 # Create a new game for training
-                from training import TrainingGame
                 game = TrainingGame()
                 state = game.reset()
                 episode_max_tile = 0
                 episode_score = 0
 
-                while True:
-                    # 记录旧的最大方块
-                    old_max_tile = game.get_max_tile()
-
-                    # Select action
-                    action = self.ai_agent.select_action(state, eval_mode=False)
+                while self.training_mode:
+                    # Select action with masking
+                    legal_actions = game.get_legal_actions()
+                    if not legal_actions:
+                        break
+                        
+                    action = self.ai_agent.select_action(state, legal_actions=legal_actions, eval_mode=False)
 
                     # Execute action
                     next_state, reward, done = game.step(action)
 
-                    # 记录新的最大方块
-                    new_max_tile = game.get_max_tile()
-                    episode_max_tile = max(episode_max_tile, new_max_tile)
+                    # 每 10 步更新一次 UI 统计数据，减少主线程压力
+                    if game.steps % 10 == 0:
+                        current_max = game.get_max_tile()
+                        current_score = game.score
+                        self.training_stats = {
+                            'episodes': episodes + 1,
+                            'avg_score': avg_score,
+                            'avg_max_tile': avg_max_tile,
+                            'last_max_tile': current_max,
+                            'last_score': current_score
+                        }
+                    
+                    # 记录本局最高
+                    episode_max_tile = max(episode_max_tile, game.get_max_tile())
                     episode_score = game.score
 
-                    # 确保状态被正确展平
-                    state_flat = state.flatten()  # 从(4,4)变成(16,)
-                    next_state_flat = next_state.flatten()
-
-                    # Store experience (使用展平的状态)
+                    # Store experience
                     if hasattr(self.ai_agent, 'memory'):
-                        self.ai_agent.memory.push(state_flat, action, reward, next_state_flat, done)
+                        s_list = get_symmetries(game.last_grid, action, reward, game.grid, done)
+                        for s, a, r, ns, d in s_list:
+                            self.ai_agent.memory.push(s, a, r, ns, d)
 
-                    # Update agent
-                    if hasattr(self.ai_agent, 'update'):
-                        try:
-                            self.ai_agent.update()
-                        except Exception as e:
-                            print(f"Update error: {e}")
-                            # 如果更新出错，继续下一次循环
-                            pass
+                    # Update agent (针对 CPU 大幅降低频率)
+                    self.ai_agent.training_steps += 1
+                    update_every = 16 # 每 16 步更新一次
+                    
+                    if self.ai_agent.training_steps % update_every == 0:
+                        if hasattr(self.ai_agent, 'update'):
+                            try:
+                                self.ai_agent.update()
+                                # 更新完后强制睡眠，让出 CPU 给 UI 线程
+                                time.sleep(0.05)
+                            except Exception as e:
+                                print(f"Training Update Error: {e}")
+                                pass
 
                     # Update state
                     state = next_state
 
                     if done:
                         break
+                    
+                    # 释放 GIL 锁
+                    time.sleep(0.001)
+                
+                if not self.training_mode:
+                    break
 
                 # Update training stats
                 episodes += 1
@@ -537,8 +606,19 @@ class Game2048:
                     'last_score': episode_score
                 }
 
-                # Sleep a bit to prevent overwhelming the UI
-                time.sleep(0.01)
+                # 每 50 轮自动保存一次，增加路径检查
+                if episodes > 0 and episodes % 50 == 0:
+                    try:
+                        import os
+                        if not os.path.exists('models'):
+                            os.makedirs('models')
+                        self.ai_agent.save("models/2048_trained.pth")
+                        print(f"Auto-saved model at episode {episodes}")
+                    except Exception as e:
+                        print(f"Save error: {e}")
+
+                # 增加睡眠时间，确保 UI 线程有充足的刷新机会
+                time.sleep(0.1)
 
         self.training_thread = threading.Thread(target=training_worker, daemon=True)
         self.training_thread.start()
@@ -562,8 +642,12 @@ class Game2048:
         # Get current state
         state = self.get_observation()
 
-        # AI selects action (in eval mode, no exploration)
-        action = self.ai_agent.select_action(state, eval_mode=True)
+        # AI selects action with masking
+        legal_actions = self.get_legal_actions()
+        if not legal_actions:
+            return False
+            
+        action = self.ai_agent.select_action(state, legal_actions=legal_actions, eval_mode=True)
 
         # Execute action
         moved = self.step(action)
@@ -629,18 +713,19 @@ class SimpleAIAgent:
         return 'SimpleAIAgent'
 
 if __name__ == "__main__":
-    # Create a simple AI agent for testing
+    # 创建一个AI智能体
     import torch
 
     # 选择设备
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
 
-    # 创建一个AI智能体（可以选择不同的智能体）
+    # 导入DQNAgent
     from training import DQNAgent
 
-    # 选项1: 创建DQN智能体（训练用）
-    ai_agent = DQNAgent(state_size=16, n_actions=4, device=device)
+    # 创建DQN智能体
+    ai_agent = DQNAgent(state_size=256, n_actions=4, device=device)
+
     # Create and run the game
     game = Game2048(ai_agent=ai_agent)
     try:
