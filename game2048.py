@@ -152,96 +152,81 @@ class Game2048:
 
         return result, score
 
-    def check_move(self, direction):
-        """Check if a move is possible in a specific direction"""
+    def _simulate_move(self, direction):
+        """Unified move simulation for game2048.py"""
+        new_grid = [row[:] for row in self.grid]
+        moved = False
+        total_score = 0
+
         if direction == 0:  # Up
-            for col in range(self.grid_size):
-                for row in range(self.grid_size - 1):
-                    if self.grid[row][col] == 0 and self.grid[row+1][col] != 0:
-                        return True
-                    if self.grid[row][col] != 0 and self.grid[row][col] == self.grid[row+1][col]:
-                        return True
+            for j in range(self.grid_size):
+                col = [new_grid[i][j] for i in range(self.grid_size)]
+                merged, s = self._merge_line(col)
+                total_score += s
+                for i in range(self.grid_size):
+                    if new_grid[i][j] != merged[i]:
+                        moved = True
+                    new_grid[i][j] = merged[i]
         elif direction == 1:  # Down
-            for col in range(self.grid_size):
-                for row in range(self.grid_size - 1, 0, -1):
-                    if self.grid[row][col] == 0 and self.grid[row-1][col] != 0:
-                        return True
-                    if self.grid[row][col] != 0 and self.grid[row][col] == self.grid[row-1][col]:
-                        return True
+            for j in range(self.grid_size):
+                col = [new_grid[i][j] for i in range(self.grid_size)][::-1]
+                merged, s = self._merge_line(col)
+                total_score += s
+                merged = merged[::-1]
+                for i in range(self.grid_size):
+                    if new_grid[i][j] != merged[i]:
+                        moved = True
+                    new_grid[i][j] = merged[i]
         elif direction == 2:  # Left
-            for row in range(self.grid_size):
-                for col in range(self.grid_size - 1):
-                    if self.grid[row][col] == 0 and self.grid[row][col+1] != 0:
-                        return True
-                    if self.grid[row][col] != 0 and self.grid[row][col] == self.grid[row][col+1]:
-                        return True
+            for i in range(self.grid_size):
+                line = new_grid[i]
+                merged, s = self._merge_line(line)
+                total_score += s
+                if new_grid[i] != merged:
+                    moved = True
+                new_grid[i] = merged
         elif direction == 3:  # Right
-            for row in range(self.grid_size):
-                for col in range(self.grid_size - 1, 0, -1):
-                    if self.grid[row][col] == 0 and self.grid[row][col-1] != 0:
-                        return True
-                    if self.grid[row][col] != 0 and self.grid[row][col] == self.grid[row][col-1]:
-                        return True
-        return False
+            for i in range(self.grid_size):
+                line = new_grid[i][::-1]
+                merged, s = self._merge_line(line)
+                total_score += s
+                merged = merged[::-1]
+                if new_grid[i] != merged:
+                    moved = True
+                new_grid[i] = merged
+        
+        return new_grid, moved, total_score
+
+    def _merge_line(self, line):
+        non_zero = [x for x in line if x != 0]
+        merged = []
+        score = 0
+        i = 0
+        while i < len(non_zero):
+            if i < len(non_zero) - 1 and non_zero[i] == non_zero[i+1]:
+                merged.append(non_zero[i] * 2)
+                score += non_zero[i] * 2
+                i += 2
+            else:
+                merged.append(non_zero[i])
+                i += 1
+        return merged + [0] * (self.grid_size - len(merged)), score
+
+    def check_move(self, direction):
+        """Strict check if a move is possible"""
+        _, moved, _ = self._simulate_move(direction)
+        return moved
 
     def get_legal_actions(self):
         """Get list of legal actions"""
         return [a for a in range(4) if self.check_move(a)]
 
     def move(self, direction):
-        """Move grid, return (moved, score)"""
-        moved = False
-        total_score = 0
-        new_grid = [[0] * self.grid_size for _ in range(self.grid_size)]
-
-        if direction == 0:  # Up
-            for col in range(self.grid_size):
-                column = [self.grid[row][col] for row in range(self.grid_size)]
-                compressed = self.compress(column)
-                merged, score = self.merge(compressed)
-                total_score += score
-
-                for row in range(len(merged)):
-                    new_grid[row][col] = merged[row]
-                    if column[row] != merged[row]:
-                        moved = True
-
-        elif direction == 1:  # Down
-            for col in range(self.grid_size):
-                column = [self.grid[row][col] for row in range(self.grid_size)]
-                compressed = self.compress(column[::-1])
-                merged, score = self.merge(compressed)
-                total_score += score
-                merged = merged[::-1] + [0] * (self.grid_size - len(merged))
-
-                for row in range(self.grid_size):
-                    new_grid[self.grid_size - 1 - row][col] = merged[row]
-                    if column[row] != merged[self.grid_size - 1 - row]:
-                        moved = True
-
-        elif direction == 2:  # Left
-            for row in range(self.grid_size):
-                compressed = self.compress(self.grid[row])
-                merged, score = self.merge(compressed)
-                total_score += score
-                new_grid[row] = merged + [0] * (self.grid_size - len(merged))
-
-                if self.grid[row] != new_grid[row]:
-                    moved = True
-
-        elif direction == 3:  # Right
-            for row in range(self.grid_size):
-                compressed = self.compress(self.grid[row][::-1])
-                merged, score = self.merge(compressed)
-                total_score += score
-                merged = merged[::-1] + [0] * (self.grid_size - len(merged))
-                new_grid[row] = merged
-
-                if self.grid[row] != new_grid[row]:
-                    moved = True
-
-        self.grid = new_grid
-        return moved, total_score
+        """Execute move using simulation results"""
+        new_grid, moved, score = self._simulate_move(direction)
+        if moved:
+            self.grid = new_grid
+        return moved, score
 
     def can_move(self):
         """Check if any move is possible"""
