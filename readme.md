@@ -13,7 +13,7 @@
 
 ## 系统要求
 
-- Python 3.7+
+- Python 3.12
 - PyTorch 1.9+
 - Pygame 2.0+
 - NumPy
@@ -22,23 +22,20 @@
 ## 安装步骤
 
 ### 1. 克隆项目
-bash
-git clone <your-repository-url>
-cd 2048-dqn-game
+项目仓库地址:
+- https: https://github.com/lhx77/game2048.git
+- ssh: git@github.com:lhx77/game2048.git
+
 ### 2. 安装依赖
 bash
 pip install -r requirements.txt
-如果没有requirements.txt文件，可以手动安装：
-bash
-pip install torch torchvision torchaudio
-pip install pygame numpy
 ## 项目结构
 2048-dqn-game/
 ├── game2048.py
 ├── training.py
 ├── README.md
-├── models_parallel/
-└── pycache/
+├── requirements.txt
+└── models/
 ## 使用方法
 
 ### 1. 启动游戏
