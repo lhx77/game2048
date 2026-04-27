@@ -8,6 +8,7 @@ import os
 import time
 from collections import deque
 
+
 # --- 数据预处理 ---
 def get_one_hot(grid):
     """Convert 4x4 grid to 4x4x16 one-hot representation"""
@@ -25,51 +26,58 @@ def get_one_hot(grid):
                 one_hot[i, j, idx] = 1
     return one_hot.flatten()
 
+
 def get_symmetries(grid, action, reward, next_grid, done):
     """Generate 8 symmetries for a given transition"""
     symmetries = []
-    
+
     # Grid is 4x4
     curr_grid = np.array(grid).reshape(4, 4)
     curr_next = np.array(next_grid).reshape(4, 4)
-    
+
     # Action mapping for rotations and flips
     # 0: Up, 1: Down, 2: Left, 3: Right
-    
+
     def rotate_action(a, k):
         # Rotate action k times 90 deg clockwise
         for _ in range(k):
-            if a == 0: a = 3 # Up -> Right
-            elif a == 3: a = 1 # Right -> Down
-            elif a == 1: a = 2 # Down -> Left
-            elif a == 2: a = 0 # Left -> Up
+            if a == 0:
+                a = 3  # Up -> Right
+            elif a == 3:
+                a = 1  # Right -> Down
+            elif a == 1:
+                a = 2  # Down -> Left
+            elif a == 2:
+                a = 0  # Left -> Up
         return a
 
     def flip_action_h(a):
-        if a == 2: return 3 # Left -> Right
-        if a == 3: return 2 # Right -> Left
+        if a == 2: return 3  # Left -> Right
+        if a == 3: return 2  # Right -> Left
         return a
 
     # 4 rotations
     for k in range(4):
-        g = np.rot90(curr_grid, k, axes=(1, 0)) # Clockwise rotation
+        g = np.rot90(curr_grid, k, axes=(1, 0))  # Clockwise rotation
         ng = np.rot90(curr_next, k, axes=(1, 0))
         a = rotate_action(action, k)
-        
+
         symmetries.append((get_one_hot(g), a, reward, get_one_hot(ng), done))
-        
+
         # Horizontal flip of the rotated grid
         g_flip = np.fliplr(g)
         ng_flip = np.fliplr(ng)
         a_flip = flip_action_h(a)
-        
+
         symmetries.append((get_one_hot(g_flip), a_flip, reward, get_one_hot(ng_flip), done))
-        
+
     return symmetries
+
 
 # --- 神经网络架构 ---
 class DQNNetwork(nn.Module):
     """Dueling DQN for better value estimation"""
+
     def __init__(self, input_size=256, n_actions=4, hidden_size=512):
         super(DQNNetwork, self).__init__()
 
@@ -98,15 +106,16 @@ class DQNNetwork(nn.Module):
     def forward(self, x):
         if x.dim() > 2:
             x = x.view(x.size(0), -1)
-        
+
         features = self.feature_layer(x)
-        
+
         values = self.value_stream(features)
         advantages = self.advantage_stream(features)
-        
+
         # Combine value and advantages
         q_values = values + (advantages - advantages.mean(dim=1, keepdim=True))
         return q_values
+
 
 # --- 经验回放 ---
 class ReplayBuffer:
@@ -119,15 +128,16 @@ class ReplayBuffer:
     def sample(self, batch_size):
         if len(self.buffer) < batch_size:
             return None
-        
+
         batch = random.sample(self.buffer, batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
-        
-        return (np.array(states), np.array(actions), np.array(rewards), 
+
+        return (np.array(states), np.array(actions), np.array(rewards),
                 np.array(next_states), np.array(dones))
 
     def __len__(self):
         return len(self.buffer)
+
 
 # --- DQN 智能体 ---
 class DQNAgent:
@@ -142,8 +152,8 @@ class DQNAgent:
         self.epsilon_start = 1.0
         self.epsilon_end = 0.05
         self.epsilon_decay = 0.999
-        self.batch_size = 512
-        self.learning_rate = 1e-4
+        self.batch_size = 256
+        self.learning_rate = 2e-4
         self.target_update = 200
         self.memory_size = 200000
         self.update_every = 8
@@ -172,7 +182,7 @@ class DQNAgent:
     def select_action(self, state, legal_actions=None, eval_mode=False):
         if legal_actions is None:
             legal_actions = [0, 1, 2, 3]
-            
+
         if not legal_actions:
             return 0
 
@@ -182,11 +192,11 @@ class DQNAgent:
         with torch.no_grad():
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
             q_values = self.policy_net(state_tensor)[0]
-            
+
             legal_q_values = q_values[legal_actions]
             max_q = torch.max(legal_q_values)
             best_actions = [legal_actions[i] for i, q in enumerate(legal_q_values) if q >= max_q - 1e-5]
-            
+
             return random.choice(best_actions)
 
     def update(self):
@@ -219,15 +229,15 @@ class DQNAgent:
             self.target_net.load_state_dict(self.policy_net.state_dict())
 
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
-        
+
         return loss.item()
 
     def adapt_training_params(self, recent_max_tiles):
         """根据表现自适应调整学习率等参数"""
         if not recent_max_tiles: return
-        
+
         avg_max = sum(recent_max_tiles) / len(recent_max_tiles)
-        
+
         # 如果平均表现较好，稍微降低学习率以稳定收敛
         if avg_max >= 1024:
             for param_group in self.optimizer.param_groups:
@@ -242,6 +252,7 @@ class DQNAgent:
     def load(self, path):
         self.policy_net.load_state_dict(torch.load(path, map_location=self.device))
         self.target_net.load_state_dict(self.policy_net.state_dict())
+
 
 # --- 训练游戏环境 ---
 class TrainingGame:
@@ -259,10 +270,10 @@ class TrainingGame:
         self.consecutive_invalid_moves = 0
         self.last_action = -1
         self.action_repetition_count = 0
-        
+
         self.add_random_tile()
         self.add_random_tile()
-        
+
         self.last_max_tile = self.get_max_tile()
         self.last_grid = [row[:] for row in self.grid]
         return self.get_observation()
@@ -308,7 +319,7 @@ class TrainingGame:
                 if new_grid[i] != merged:
                     moved = True
                 new_grid[i] = merged
-        
+
         return new_grid, moved, score
 
     def _merge_line(self, line):
@@ -317,7 +328,7 @@ class TrainingGame:
         score = 0
         i = 0
         while i < len(non_zero):
-            if i < len(non_zero) - 1 and non_zero[i] == non_zero[i+1]:
+            if i < len(non_zero) - 1 and non_zero[i] == non_zero[i + 1]:
                 merged.append(non_zero[i] * 2)
                 score += non_zero[i] * 2
                 i += 2
@@ -358,7 +369,7 @@ class TrainingGame:
 
         new_max = self.get_max_tile()
         self.last_max_tile = new_max
-        
+
         if not self.can_move():
             self.game_over = True
 
@@ -384,9 +395,8 @@ class TrainingGame:
 
     def calculate_reward(self, old_max, new_max, score_gain, action):
         reward = 0.0
-        
-        # 1. 合并奖励 (核心)
 
+        # 1. 合并奖励
         if score_gain > 0:
             reward += math.log2(score_gain) * 5.0
             self.consecutive_no_merge = 0
@@ -395,79 +405,89 @@ class TrainingGame:
             if self.consecutive_no_merge > 3:
                 reward -= 2.0
 
-        # 2. 最大值增长奖励
-        if new_max > old_max:
-            reward += math.log2(new_max) * 10.0
-            if new_max >= 2048: reward += 2000.0
-            elif new_max >= 1024: reward += 500.0
-            elif new_max >= 512: reward += 200.0
+        # 2. 角落策略
+        # 找实际最大值
+        actual_max = 0
+        for row in self.grid:
+            for val in row:
+                actual_max = max(actual_max, val)
 
-        # 3. 单调性与角落奖励
-        # 鼓励最大块在左上角 (0,0)
-        if self.grid[0][0] == new_max:
-            reward += 5.0
-        
-        # 检查单调性 (左上到右下递减)
-        mono_reward = 0
-        for i in range(4):
-            for j in range(3):
-                if self.grid[i][j] >= self.grid[i][j+1] and self.grid[i][j] > 0:
-                    mono_reward += 0.5
-                if self.grid[j][i] >= self.grid[j+1][i] and self.grid[j][i] > 0:
-                    mono_reward += 0.5
-        reward += mono_reward
-
-        # 4. 空格奖励 (鼓励留白)
+        # 3. 空格惩罚
         empty_count = sum(1 for row in self.grid for x in row if x == 0)
-        reward += empty_count * 0.5
-            
-        # 5. 重复动作惩罚 (防止死循环)
-        if action == self.last_action:
-            self.action_repetition_count += 1
-            reward -= self.action_repetition_count * 2.0
-        else:
-            self.last_action = action
-            self.action_repetition_count = 0
 
-        if self.game_over:
-            if new_max < 512:
-                reward -= 100.0
-            
+        if empty_count < 4:
+            penalty = -(8 - 2 ** empty_count)
+            reward += penalty
+        else:
+            # 有足够空格，正常奖励
+            reward += empty_count * 0.5
+
+        # 4. 同一值多个惩罚 - 使用Sigmoid平滑函数
+        duplicate_penalty = 0.0
+
+        # 统计每个值的数量
+        value_count = {}
+        for i in range(4):
+            for j in range(4):
+                val = self.grid[i][j]
+                if val > 0:
+                    value_count[val] = value_count.get(val, 0) + 1
+
+        # 计算惩罚
+        for val, count in value_count.items():
+            if count >= 2 and val > 0:
+                x = math.log2(val)
+                k = 1.0      # 陡峭度，值越大过渡越尖锐
+                x0 = 4.0     # 中心点，值16开始有显著惩罚
+                sigmoid = 1.0 / (1.0 + math.exp(-k * (x - x0)))
+                value_factor = 0.1 + 0.9 * sigmoid
+                if val <= 4:  # 2和4
+                    value_factor *= 0
+                elif val <= 8:  # 8
+                    value_factor *= 0.2
+                base_penalty = 0.4
+                count_factor = (count - 1)
+                penalty = -(base_penalty * value_factor * count_factor)
+                duplicate_penalty += penalty
+
+        reward += duplicate_penalty
         return reward
 
     def get_legal_actions(self):
         return [a for a in range(4) if self.check_move(a)]
 
+
 # --- 训练入口 ---
 def train_agent(episodes=3000, save_dir='models', device='cpu'):
     os.makedirs(save_dir, exist_ok=True)
     agent = DQNAgent(device=device)
-    
+
     for episode in range(1, episodes + 1):
         game = TrainingGame()
         state = game.reset()
-        
+
         while True:
             legal_actions = game.get_legal_actions()
             if not legal_actions: break
-            
+
             action = agent.select_action(state, legal_actions=legal_actions)
             next_state, reward, done = game.step(action)
-            
+
             s_list = get_symmetries(game.last_grid, action, reward, game.grid, done)
             for s, a, r, ns, d in s_list:
                 agent.memory.push(s, a, r, ns, d)
-            
+
             agent.training_steps += 1
             if agent.training_steps % agent.update_every == 0:
                 agent.update()
-                
+
             state = next_state
             if done: break
-            
+
         if episode % 100 == 0:
             print(f"Episode {episode} completed. Max Tile: {game.get_max_tile()}")
             agent.save(f"{save_dir}/2048_ep{episode}.pth")
+
 
 if __name__ == "__main__":
     train_agent()
